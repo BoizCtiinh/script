@@ -1,0 +1,514 @@
+-- Auto Cursed Dual Katana (CDK) Script
+-- Blox Fruits - Third Sea Only
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+print("========================================")
+print("Auto CDK - Starting...")
+print("========================================")
+
+-- Check Sea
+local placeId = game.PlaceId
+if placeId ~= 7449423635 and placeId ~= 100117331123089 then
+    Player:Kick("This script only works in Third Sea!")
+    return
+end
+
+-- Configuration
+local Config = {
+    MasteryRequired = 350,
+    TweenSpeed = 300,
+    FarmRadius = 150,
+    AutoFarm = true
+}
+
+-- Storage
+local ScriptStorage = {
+    CurrentTask = "",
+    YamaMastery = 0,
+    TushitaMastery = 0,
+    HasYama = false,
+    HasTushita = false,
+    HasCDK = false,
+    CurrentSword = nil
+}
+
+-- Remotes
+local Remotes = {}
+setmetatable(Remotes, {
+    __index = function(t, k)
+        return game:GetService("ReplicatedStorage").Remotes[k]
+    end
+})
+
+-- ================================
+-- UTILITY FUNCTIONS
+-- ================================
+
+function CheckSword(swordName)
+    return Player.Backpack:FindFirstChild(swordName) or Player.Character:FindFirstChild(swordName)
+end
+
+function GetSwordMastery(swordName)
+    local sword = Player.Backpack:FindFirstChild(swordName) or Player.Character:FindFirstChild(swordName)
+    if sword and sword:FindFirstChild("Level") then
+        return sword.Level.Value
+    end
+    return 0
+end
+
+function EquipSword(swordName)
+    local sword = Player.Backpack:FindFirstChild(swordName)
+    if sword then
+        Player.Character.Humanoid:EquipTool(sword)
+        return true
+    end
+    return false
+end
+
+function GetDistance(pos1, pos2)
+    pos2 = pos2 or Player.Character.HumanoidRootPart.Position
+    return (pos1 - pos2).Magnitude
+end
+
+-- ================================
+-- TWEEN CONTROLLER
+-- ================================
+
+local TweenController = {}
+TweenController.CurrentTween = nil
+
+function TweenController:Stop()
+    if self.CurrentTween then
+        self.CurrentTween:Cancel()
+        self.CurrentTween = nil
+    end
+end
+
+function TweenController:Create(targetCFrame)
+    self:Stop()
+    
+    if not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then
+        return
+    end
+    
+    local hrp = Player.Character.HumanoidRootPart
+    local distance = (targetCFrame.Position - hrp.Position).Magnitude
+    
+    -- NoClip
+    for _, part in pairs(Player.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+    
+    -- If very close, just teleport
+    if distance < 10 then
+        hrp.CFrame = targetCFrame
+        return
+    end
+    
+    local duration = distance / Config.TweenSpeed
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
+    
+    self.CurrentTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+    self.CurrentTween:Play()
+    
+    return self.CurrentTween
+end
+
+-- ================================
+-- COMBAT CONTROLLER
+-- ================================
+
+local CombatController = {}
+CombatController.IsAttacking = false
+
+function CombatController:FastAttack()
+    local tool = Player.Character:FindFirstChildOfClass("Tool")
+    if tool then
+        game:GetService("VirtualInputManager"):SendKeyEvent(true, "Z", false, game)
+        task.wait(0.1)
+        game:GetService("VirtualInputManager"):SendKeyEvent(false, "Z", false, game)
+    end
+end
+
+function CombatController:GetNearbyMobs(radius)
+    local mobs = {}
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return mobs end
+    
+    for _, mob in pairs(workspace.Enemies:GetChildren()) do
+        if mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 and mob:FindFirstChild("HumanoidRootPart") then
+            local distance = (mob.HumanoidRootPart.Position - hrp.Position).Magnitude
+            if distance <= radius then
+                table.insert(mobs, mob)
+            end
+        end
+    end
+    
+    return mobs
+end
+
+function CombatController:FarmMobs(targetPosition, swordName)
+    self.IsAttacking = true
+    
+    -- Equip sword
+    if not EquipSword(swordName) then
+        print("⚠ Failed to equip " .. swordName)
+        self.IsAttacking = false
+        return
+    end
+    
+    -- Tween to farm position
+    TweenController:Create(targetPosition + Vector3.new(0, 50, 0))
+    
+    -- Wait until close
+    repeat
+        task.wait(0.1)
+    until GetDistance(targetPosition + Vector3.new(0, 50, 0)) < 100 or not Config.AutoFarm
+    
+    -- Farm nearby mobs
+    local farmTime = 0
+    local maxFarmTime = 300 -- 5 minutes max
+    
+    while Config.AutoFarm and farmTime < maxFarmTime do
+        task.wait(0.1)
+        farmTime = farmTime + 0.1
+        
+        local mobs = self:GetNearbyMobs(Config.FarmRadius)
+        
+        if #mobs > 0 then
+            -- Attack mobs
+            for _, mob in pairs(mobs) do
+                if mob.Humanoid.Health > 0 then
+                    -- Position near mob
+                    TweenController:Create(mob.HumanoidRootPart.CFrame * CFrame.new(0, 10, 0))
+                    
+                    -- Fast attack
+                    self:FastAttack()
+                    
+                    task.wait(0.05)
+                end
+            end
+        else
+            -- No mobs nearby, move around
+            local randomOffset = Vector3.new(
+                math.random(-50, 50),
+                0,
+                math.random(-50, 50)
+            )
+            TweenController:Create(targetPosition + randomOffset + Vector3.new(0, 50, 0))
+            task.wait(1)
+        end
+        
+        -- Update mastery
+        local currentMastery = GetSwordMastery(swordName)
+        if swordName == "Yama" then
+            ScriptStorage.YamaMastery = currentMastery
+        elseif swordName == "Tushita" then
+            ScriptStorage.TushitaMastery = currentMastery
+        end
+        
+        -- Check if reached required mastery
+        if currentMastery >= Config.MasteryRequired then
+            print("✓ " .. swordName .. " reached " .. Config.MasteryRequired .. " mastery!")
+            break
+        end
+    end
+    
+    self.IsAttacking = false
+end
+
+-- ================================
+-- CDK QUEST CONTROLLER
+-- ================================
+
+local CDKQuest = {}
+CDKQuest.HauntedCastlePos = CFrame.new(-9515, 142, 5542)
+
+function CDKQuest:CheckProgress()
+    -- Check if player has CDK
+    if CheckSword("Cursed Dual Katana") then
+        ScriptStorage.HasCDK = true
+        return "Completed"
+    end
+    
+    -- Check swords
+    ScriptStorage.HasYama = CheckSword("Yama") ~= nil
+    ScriptStorage.HasTushita = CheckSword("Tushita") ~= nil
+    
+    if not ScriptStorage.HasYama then
+        return "NeedYama"
+    end
+    
+    if not ScriptStorage.HasTushita then
+        return "NeedTushita"
+    end
+    
+    -- Check mastery
+    ScriptStorage.YamaMastery = GetSwordMastery("Yama")
+    ScriptStorage.TushitaMastery = GetSwordMastery("Tushita")
+    
+    if ScriptStorage.YamaMastery < Config.MasteryRequired then
+        return "FarmYama"
+    end
+    
+    if ScriptStorage.TushitaMastery < Config.MasteryRequired then
+        return "FarmTushita"
+    end
+    
+    return "ReadyForCDK"
+end
+
+function CDKQuest:FarmYamaMastery()
+    ScriptStorage.CurrentTask = string.format("Farming Yama Mastery [%d/%d]", 
+        ScriptStorage.YamaMastery, Config.MasteryRequired)
+    
+    print("🗡 Farming Yama mastery at Haunted Castle...")
+    CombatController:FarmMobs(self.HauntedCastlePos, "Yama")
+end
+
+function CDKQuest:FarmTushitaMastery()
+    ScriptStorage.CurrentTask = string.format("Farming Tushita Mastery [%d/%d]", 
+        ScriptStorage.TushitaMastery, Config.MasteryRequired)
+    
+    print("🗡 Farming Tushita mastery at Haunted Castle...")
+    CombatController:FarmMobs(self.HauntedCastlePos, "Tushita")
+end
+
+function CDKQuest:StartCDKQuest()
+    ScriptStorage.CurrentTask = "Starting CDK Quest..."
+    
+    print("⚔️ Both swords have 350+ mastery!")
+    print("⚔️ Starting CDK quest...")
+    
+    -- TODO: Implement CDK quest steps
+    -- This requires specific quest triggers and NPC interactions
+    -- For now, just notify
+    
+    task.wait(2)
+    ScriptStorage.CurrentTask = "Manual CDK Quest Required - Check requirements!"
+end
+
+-- ================================
+-- CREATE UI
+-- ================================
+
+local function CreateUI()
+    -- Remove old UI
+    if PlayerGui:FindFirstChild("AutoCDKGui") then
+        PlayerGui:FindFirstChild("AutoCDKGui"):Destroy()
+    end
+    
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AutoCDKGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = PlayerGui
+    
+    -- Main Frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 400, 0, 300)
+    MainFrame.Position = UDim2.new(0.5, -200, 0.5, -150)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Parent = ScreenGui
+    
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, 15)
+    Corner.Parent = MainFrame
+    
+    local Stroke = Instance.new("UIStroke")
+    Stroke.Color = Color3.fromRGB(255, 200, 50)
+    Stroke.Thickness = 2
+    Stroke.Parent = MainFrame
+    
+    -- Title
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, 0, 0, 50)
+    Title.BackgroundTransparency = 1
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 24
+    Title.TextColor3 = Color3.fromRGB(255, 200, 50)
+    Title.Text = "⚔️ AUTO CURSED DUAL KATANA"
+    Title.Parent = MainFrame
+    
+    -- Status Container
+    local StatusFrame = Instance.new("Frame")
+    StatusFrame.Size = UDim2.new(1, -40, 0, 180)
+    StatusFrame.Position = UDim2.new(0, 20, 0, 60)
+    StatusFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    StatusFrame.BorderSizePixel = 0
+    StatusFrame.Parent = MainFrame
+    
+    local StatusCorner = Instance.new("UICorner")
+    StatusCorner.CornerRadius = UDim.new(0, 10)
+    StatusCorner.Parent = StatusFrame
+    
+    -- Status Labels
+    local function CreateLabel(text, yPos)
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -20, 0, 30)
+        label.Position = UDim2.new(0, 10, 0, yPos)
+        label.BackgroundTransparency = 1
+        label.Font = Enum.Font.Gotham
+        label.TextSize = 14
+        label.TextColor3 = Color3.fromRGB(200, 200, 200)
+        label.Text = text
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.Parent = StatusFrame
+        return label
+    end
+    
+    local YamaLabel = CreateLabel("Yama: Checking...", 10)
+    local TushitaLabel = CreateLabel("Tushita: Checking...", 45)
+    local TaskLabel = CreateLabel("Task: Idle", 80)
+    local CDKLabel = CreateLabel("CDK: Not Obtained", 115)
+    
+    -- Toggle Button
+    local ToggleButton = Instance.new("TextButton")
+    ToggleButton.Size = UDim2.new(1, -40, 0, 40)
+    ToggleButton.Position = UDim2.new(0, 20, 1, -50)
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+    ToggleButton.Font = Enum.Font.GothamBold
+    ToggleButton.TextSize = 16
+    ToggleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleButton.Text = "⏸ PAUSE"
+    ToggleButton.Parent = MainFrame
+    
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(0, 10)
+    ToggleCorner.Parent = ToggleButton
+    
+    ToggleButton.MouseButton1Click:Connect(function()
+        Config.AutoFarm = not Config.AutoFarm
+        if Config.AutoFarm then
+            ToggleButton.Text = "⏸ PAUSE"
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+        else
+            ToggleButton.Text = "▶ START"
+            ToggleButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+            TweenController:Stop()
+        end
+    end)
+    
+    -- Update UI Loop
+    task.spawn(function()
+        while ScreenGui.Parent do
+            task.wait(0.5)
+            
+            pcall(function()
+                -- Update Yama
+                if ScriptStorage.HasYama then
+                    local mastery = ScriptStorage.YamaMastery
+                    local color = mastery >= Config.MasteryRequired and "✓" or "⚠"
+                    YamaLabel.Text = string.format("%s Yama: %d/%d Mastery", 
+                        color, mastery, Config.MasteryRequired)
+                    YamaLabel.TextColor3 = mastery >= Config.MasteryRequired 
+                        and Color3.fromRGB(50, 255, 50) 
+                        or Color3.fromRGB(255, 200, 50)
+                else
+                    YamaLabel.Text = "❌ Yama: Not Found"
+                    YamaLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+                end
+                
+                -- Update Tushita
+                if ScriptStorage.HasTushita then
+                    local mastery = ScriptStorage.TushitaMastery
+                    local color = mastery >= Config.MasteryRequired and "✓" or "⚠"
+                    TushitaLabel.Text = string.format("%s Tushita: %d/%d Mastery", 
+                        color, mastery, Config.MasteryRequired)
+                    TushitaLabel.TextColor3 = mastery >= Config.MasteryRequired 
+                        and Color3.fromRGB(50, 255, 50) 
+                        or Color3.fromRGB(255, 200, 50)
+                else
+                    TushitaLabel.Text = "❌ Tushita: Not Found"
+                    TushitaLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+                end
+                
+                -- Update Task
+                TaskLabel.Text = "Task: " .. ScriptStorage.CurrentTask
+                
+                -- Update CDK
+                if ScriptStorage.HasCDK then
+                    CDKLabel.Text = "✓ CDK: Obtained!"
+                    CDKLabel.TextColor3 = Color3.fromRGB(50, 255, 50)
+                else
+                    CDKLabel.Text = "⚔️ CDK: In Progress..."
+                    CDKLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+                end
+            end)
+        end
+    end)
+    
+    return ScreenGui
+end
+
+-- ================================
+-- MAIN LOOP
+-- ================================
+
+local function MainLoop()
+    CreateUI()
+    
+    print("✓ UI Loaded!")
+    print("✓ Starting main loop...")
+    
+    while task.wait(1) do
+        if not Config.AutoFarm then
+            ScriptStorage.CurrentTask = "Paused"
+            task.wait(2)
+            continue
+        end
+        
+        local status = CDKQuest:CheckProgress()
+        
+        if status == "Completed" then
+            ScriptStorage.CurrentTask = "✓ CDK Obtained! Script Complete!"
+            print("========================================")
+            print("🎉 Congratulations!")
+            print("✓ Cursed Dual Katana obtained!")
+            print("========================================")
+            Config.AutoFarm = false
+            break
+            
+        elseif status == "NeedYama" then
+            ScriptStorage.CurrentTask = "❌ Need Yama Sword First!"
+            print("⚠ You need Yama sword to start!")
+            task.wait(5)
+            
+        elseif status == "NeedTushita" then
+            ScriptStorage.CurrentTask = "❌ Need Tushita Sword First!"
+            print("⚠ You need Tushita sword to start!")
+            task.wait(5)
+            
+        elseif status == "FarmYama" then
+            CDKQuest:FarmYamaMastery()
+            
+        elseif status == "FarmTushita" then
+            CDKQuest:FarmTushitaMastery()
+            
+        elseif status == "ReadyForCDK" then
+            CDKQuest:StartCDKQuest()
+            
+        end
+    end
+end
+
+-- ================================
+-- START SCRIPT
+-- ================================
+
+print("========================================")
+print("✓ Auto CDK Script Loaded!")
+print("✓ Sea: Third Sea")
+print("✓ Required: Yama + Tushita swords")
+print("✓ Target: 350+ Mastery each")
+print("========================================")
+
+task.spawn(MainLoop)
