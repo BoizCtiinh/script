@@ -22,6 +22,7 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local HttpService = game:GetService("HttpService")
 
 -- === CONFIGURATION ===
 _G.Settings = {
@@ -70,6 +71,116 @@ _G.LockTween = false
 _G.CurrentTween = nil
 _G.FarmingMaterial = false
 _G.CurrentTargetMonster = ""
+
+-- === PROGRESS FILE ===
+local ProgressFileName = Player.Name .. "-Main.json"
+local ProgressFilePath = ProgressFileName
+
+-- Progress states
+local ProgressStates = {
+    FARM_VAMPIRE_FANG = "Farm Vampire Fang",
+    FARM_DEMONIC_WISP = "Farm Demonic Wisp",
+    GET_MELEE = "Get melee (Đã đủ material)",
+    DONE = "Done Buy melee"
+}
+
+-- === PROGRESS FILE FUNCTIONS ===
+function SaveProgress(progressState)
+    local currentVampireFang = GetCountMaterials("Vampire Fang")
+    local currentDemonicWisp = GetCountMaterials("Demonic Wisp")
+    
+    -- Load existing progress to compare
+    local existingData = nil
+    pcall(function()
+        if isfile(ProgressFilePath) then
+            local jsonData = readfile(ProgressFilePath)
+            existingData = HttpService:JSONDecode(jsonData)
+        end
+    end)
+    
+    -- Only update material count if it INCREASES
+    local savedVampireFang = currentVampireFang
+    local savedDemonicWisp = currentDemonicWisp
+    
+    if existingData and existingData.Materials then
+        -- Keep old count if current is lower (material decreased)
+        if currentVampireFang < existingData.Materials.VampireFang then
+            savedVampireFang = existingData.Materials.VampireFang
+            print("🔒 Vampire Fang locked at: " .. savedVampireFang .. " (current: " .. currentVampireFang .. ")")
+        end
+        
+        if currentDemonicWisp < existingData.Materials.DemonicWisp then
+            savedDemonicWisp = existingData.Materials.DemonicWisp
+            print("🔒 Demonic Wisp locked at: " .. savedDemonicWisp .. " (current: " .. currentDemonicWisp .. ")")
+        end
+    end
+    
+    local data = {
+        Username = Player.Name,
+        Progress = progressState,
+        Timestamp = os.time(),
+        Materials = {
+            VampireFang = savedVampireFang,
+            DemonicWisp = savedDemonicWisp
+        }
+    }
+    
+    local success, result = pcall(function()
+        local jsonData = HttpService:JSONEncode(data)
+        writefile(ProgressFilePath, jsonData)
+    end)
+    
+    if success then
+        print("💾 Progress saved: " .. progressState)
+    else
+        warn("❌ Failed to save progress: " .. tostring(result))
+    end
+end
+
+function LoadProgress()
+    local success, result = pcall(function()
+        if isfile(ProgressFilePath) then
+            local jsonData = readfile(ProgressFilePath)
+            return HttpService:JSONDecode(jsonData)
+        end
+        return nil
+    end)
+    
+    if success and result then
+        print("📂 Progress loaded: " .. result.Progress)
+        if result.Materials then
+            print("  • Vampire Fang (saved): " .. result.Materials.VampireFang)
+            print("  • Demonic Wisp (saved): " .. result.Materials.DemonicWisp)
+        end
+        return result
+    else
+        print("📂 No previous progress found, starting fresh")
+        return nil
+    end
+end
+
+function GetSavedMaterialCount(materialName)
+    local success, result = pcall(function()
+        if isfile(ProgressFilePath) then
+            local jsonData = readfile(ProgressFilePath)
+            local data = HttpService:JSONDecode(jsonData)
+            if data.Materials then
+                if materialName == "Vampire Fang" then
+                    return data.Materials.VampireFang or 0
+                elseif materialName == "Demonic Wisp" then
+                    return data.Materials.DemonicWisp or 0
+                end
+            end
+        end
+        return 0
+    end)
+    
+    if success then
+        return result
+    else
+        return 0
+    end
+end
 
 -- === CHOOSE TEAM FUNCTION ===
 local function chooseTeam()
@@ -256,25 +367,6 @@ function EquipWeapon(ToolSe)
     end)
 end
 
--- === STOP TWEEN ===
-function StopTween()
-    _G.LockTween = false
-    if _G.CurrentTween then
-        _G.CurrentTween:Cancel()
-        _G.CurrentTween = nil
-    end
-    
-    -- Cleanup BodyVelocity
-    if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
-        local hrp = Player.Character.HumanoidRootPart
-        for _, v in pairs(hrp:GetChildren()) do
-            if v:IsA("BodyVelocity") then
-                v:Destroy()
-            end
-        end
-    end
-end
-
 -- === TWEEN FUNCTION ===
 function topos(targetCFrame)
     pcall(function()
@@ -283,12 +375,36 @@ function topos(targetCFrame)
         local hrp = Player.Character.HumanoidRootPart
         local distance = (targetCFrame.Position - hrp.Position).Magnitude
         
+        -- If already close, just set position
         if distance < 15 then
+            if _G.CurrentTween then
+                _G.CurrentTween:Cancel()
+                _G.CurrentTween = nil
+            end
+            _G.LockTween = false
             hrp.CFrame = targetCFrame
             return
         end
         
+        -- If already tweening to same target, don't create new tween
+        if _G.LockTween and _G.CurrentTween then
+            return
+        end
+        
+        -- Stop any existing tween first
+        if _G.CurrentTween then
+            _G.CurrentTween:Cancel()
+            _G.CurrentTween = nil
+        end
+        
         _G.LockTween = true
+        
+        -- Clean up old BodyVelocity
+        for _, v in pairs(hrp:GetChildren()) do
+            if v:IsA("BodyVelocity") and v.Name == "BodyClip" then
+                v:Destroy()
+            end
+        end
         
         -- Create BodyVelocity
         local bodyVelocity = Instance.new("BodyVelocity")
@@ -296,6 +412,11 @@ function topos(targetCFrame)
         bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
         bodyVelocity.Velocity = Vector3.new(0, 0, 0)
         bodyVelocity.Parent = hrp
+        
+        -- Clean up old part
+        if Player.Character:FindFirstChild("PartTele") then
+            Player.Character.PartTele:Destroy()
+        end
         
         -- Create invisible part
         local part = Instance.new("Part")
@@ -326,6 +447,7 @@ function topos(targetCFrame)
             _G.LockTween = false
             if bodyVelocity and bodyVelocity.Parent then bodyVelocity:Destroy() end
             if part and part.Parent then part:Destroy() end
+            _G.CurrentTween = nil
         end)
     end)
 end
@@ -471,29 +593,90 @@ function FarmMaterial(materialName)
     
     while _G.FarmingMaterial do
         pcall(function()
+            -- Check if already have Sanguine Art
+            if CheckSanguineArt() then
+                print("\n✅ SANGUINE ART FOUND IN BACKPACK!")
+                print("🛑 Stopping farm...")
+                _G.FarmingMaterial = false
+                _G.Settings.AutoFarm = false
+                _G.CurrentTargetMonster = ""
+                SaveProgress(ProgressStates.DONE)
+                return
+                end
+                            -- Use saved count (always increases, never decreases)
+            local savedCount = GetSavedMaterialCount(materialName)
             local currentCount = GetCountMaterials(materialName)
+            local displayCount = math.max(savedCount, currentCount)
             local needed = MaterialsNeeded[materialName]
             
-            if currentCount >= needed then
-                print("✅ " .. materialName .. " complete: " .. currentCount .. "/" .. needed)
+            if displayCount >= needed then
+                print("✅ " .. materialName .. " complete: " .. displayCount .. "/" .. needed)
                 _G.FarmingMaterial = false
                 _G.CurrentTargetMonster = ""
+                
+                -- Lock progress when material is complete
+                if materialName == "Vampire Fang" then
+                    SaveProgress(ProgressStates.FARM_DEMONIC_WISP)
+                elseif materialName == "Demonic Wisp" then
+                    SaveProgress(ProgressStates.GET_MELEE)
+                end
                 return
             end
             
-            print("📊 " .. materialName .. ": " .. currentCount .. "/" .. needed)
+            -- Save progress every loop to lock increasing count
+            SaveProgress(
+                materialName == "Vampire Fang" and ProgressStates.FARM_VAMPIRE_FANG or ProgressStates.FARM_DEMONIC_WISP
+            )
+            
+            print("📊 " .. materialName .. ": " .. displayCount .. "/" .. needed .. " (current: " .. currentCount .. ")")
             
             -- Farm mobs directly (no quest)
             if workspace.Enemies:FindFirstChild(config.Monster) then
                 for _, v in pairs(workspace.Enemies:GetChildren()) do
                     if v.Name == config.Monster and v:FindFirstChild("Humanoid") and v:FindFirstChild("HumanoidRootPart") and v.Humanoid.Health > 0 then
+                        -- First, tween to mob
+                        local targetPos = v.HumanoidRootPart.CFrame * CFrame.new(0, _G.Settings.FarmHeight, 0)
+                        local distance = (Player.Character.HumanoidRootPart.Position - targetPos.Position).Magnitude
+                        
+                        if distance > 15 then
+                            topos(targetPos)
+                            task.wait(distance / _G.Settings.TweenSpeed + 0.5)
+                        end
+                        
+                        -- Create BodyVelocity to prevent falling
+                        local hrp = Player.Character.HumanoidRootPart
+                        local antiGravity = Instance.new("BodyVelocity")
+                        antiGravity.Name = "AntiGravity"
+                        antiGravity.MaxForce = Vector3.new(0, math.huge, 0)
+                        antiGravity.Velocity = Vector3.new(0, 0, 0)
+                        antiGravity.Parent = hrp
+                        
+                        -- Lock position above mob
                         repeat
                             task.wait()
+                            -- Check Sanguine Art even during combat
+                            if CheckSanguineArt() then
+                                print("\n✅ SANGUINE ART FOUND!")
+                                _G.FarmingMaterial = false
+                                _G.Settings.AutoFarm = false
+                                SaveProgress(ProgressStates.DONE)
+                                if antiGravity and antiGravity.Parent then antiGravity:Destroy() end
+                                return
+                            end
                             if _G.Settings.AutoHaki then AutoHaki() end
-                            -- Removed hitbox enlargement
-                            v.Humanoid.WalkSpeed = 0
-                            topos(v.HumanoidRootPart.CFrame * CFrame.new(0, _G.Settings.FarmHeight, 0))
+                            
+                            -- Lock player position above mob (no tween, direct CFrame set)
+                            if v:FindFirstChild("HumanoidRootPart") and v.Humanoid.Health > 0 then
+                                v.Humanoid.WalkSpeed = 0
+                                v.HumanoidRootPart.CanCollide = false
+                                hrp.CFrame = v.HumanoidRootPart.CFrame * CFrame.new(0, _G.Settings.FarmHeight, 0)
+                            end
                         until not _G.FarmingMaterial or v.Humanoid.Health <= 0 or not v.Parent
+                        
+                        -- Cleanup BodyVelocity
+                        if antiGravity and antiGravity.Parent then
+                            antiGravity:Destroy()
+                        end
                     end
                 end
             else
@@ -534,7 +717,7 @@ function BuySanguineArt()
     ReplicatedStorage.Remotes.CommF_:InvokeServer("BuySanguineArt", true)
     ReplicatedStorage.Remotes.CommF_:InvokeServer("BuySanguineArt")
     
-    print("✅ Sanguine Art purchased!")
+    print("✅ Purchase command executed!")
 end
 
 -- === MAIN SCRIPT ===
@@ -542,72 +725,131 @@ print("=" .. string.rep("=", 60) .. "=")
 print("🎯 AUTO FARM MATERIAL SANGUINE ART - UPDATED VERSION")
 print("=" .. string.rep("=", 60) .. "=")
 
--- Step 0: Check if already have Sanguine Art
+-- Step 0: Check if already have Sanguine Art in backpack
 if CheckSanguineArt() then
     print("\n✅ SANGUINE ART ALREADY OWNED!")
     print("🛑 Script stopped.")
+    SaveProgress(ProgressStates.DONE)
     print("=" .. string.rep("=", 60) .. "=")
-    return -- Stop script completely
+    return
 end
 
--- Step 1: Choose Team
+-- Step 1: Load previous progress
+local savedProgress = LoadProgress()
+local currentProgress = nil
+
+if savedProgress then
+    print("\n📋 Previous progress: " .. savedProgress.Progress)
+    -- ALWAYS trust saved progress
+    currentProgress = savedProgress.Progress
+    print("✅ Using saved progress state")
+else
+    -- First time running - check materials
+    print("📊 First run - checking materials...")
+    local vampireFang = GetCountMaterials("Vampire Fang")
+    local demonicWisp = GetCountMaterials("Demonic Wisp")
+    
+    print("  • Vampire Fang: " .. vampireFang .. "/" .. MaterialsNeeded["Vampire Fang"])
+    print("  • Demonic Wisp: " .. demonicWisp .. "/" .. MaterialsNeeded["Demonic Wisp"])
+    
+    -- Determine starting progress
+    if vampireFang >= MaterialsNeeded["Vampire Fang"] and demonicWisp >= MaterialsNeeded["Demonic Wisp"] then
+        currentProgress = ProgressStates.GET_MELEE
+    elseif vampireFang >= MaterialsNeeded["Vampire Fang"] then
+        currentProgress = ProgressStates.FARM_DEMONIC_WISP
+    else
+        currentProgress = ProgressStates.FARM_VAMPIRE_FANG
+    end
+    
+    SaveProgress(currentProgress)
+end
+
+-- Step 2: Choose Team
 chooseTeam()
 task.wait(2)
 
--- Step 2: Check Materials
-print("\n📦 Checking materials...")
-for materialName, needed in pairs(MaterialsNeeded) do
-    local current = GetCountMaterials(materialName)
-    if current >= needed then
-        print("✅ " .. materialName .. ": " .. current .. "/" .. needed .. " (Complete)")
-    else
-        print("❌ " .. materialName .. ": " .. current .. "/" .. needed .. " (Need " .. (needed - current) .. " more)")
+-- Step 3: Display current progress
+print("\n📊 Current Progress: " .. currentProgress)
+print("💡 Material count only increases, never decreases!")
+
+-- Step 4: Execute based on progress state
+if currentProgress == ProgressStates.FARM_VAMPIRE_FANG then
+    print("\n🧛 Farming Vampire Fang...")
+    _G.FarmingMaterial = true
+    _G.Settings.AutoFarm = true
+    SaveProgress(ProgressStates.FARM_VAMPIRE_FANG)
+    FarmMaterial("Vampire Fang")
+    _G.FarmingMaterial = false
+    _G.Settings.AutoFarm = false
+    
+    -- Check if Sanguine Art appeared during farming
+    if CheckSanguineArt() then
+        print("\n✅ SANGUINE ART FOUND! Script complete.")
+        SaveProgress(ProgressStates.DONE)
+        print("\n✨ SCRIPT COMPLETE! ✨")
+        print("💾 Progress saved to: " .. ProgressFileName)
+        print("=" .. string.rep("=", 60) .. "=")
+        return
+    end
+    
+    task.wait(1)
+    currentProgress = ProgressStates.FARM_DEMONIC_WISP
+end
+
+if currentProgress == ProgressStates.FARM_DEMONIC_WISP then
+    print("\n👻 Farming Demonic Wisp...")
+    _G.FarmingMaterial = true
+    _G.Settings.AutoFarm = true
+    SaveProgress(ProgressStates.FARM_DEMONIC_WISP)
+    FarmMaterial("Demonic Wisp")
+    _G.FarmingMaterial = false
+    _G.Settings.AutoFarm = false
+    
+    -- Check if Sanguine Art appeared during farming
+    if CheckSanguineArt() then
+        print("\n✅ SANGUINE ART FOUND! Script complete.")
+        SaveProgress(ProgressStates.DONE)
+        print("\n✨ SCRIPT COMPLETE! ✨")
+        print("💾 Progress saved to: " .. ProgressFileName)
+        print("=" .. string.rep("=", 60) .. "=")
+        return
+    end
+    
+    task.wait(1)
+    currentProgress = ProgressStates.GET_MELEE
+end
+
+-- Step 5: Buy Sanguine Art (loop until success)
+if currentProgress == ProgressStates.GET_MELEE then
+    print("\n💎 Materials complete! Proceeding to purchase...")
+    SaveProgress(ProgressStates.GET_MELEE)
+    
+    local purchaseAttempts = 0
+    local maxAttempts = 5
+    
+    while not CheckSanguineArt() and purchaseAttempts < maxAttempts do
+        purchaseAttempts = purchaseAttempts + 1
+        print("\n🛒 Purchase attempt " .. purchaseAttempts .. "/" .. maxAttempts)
+        
+        BuySanguineArt()
+        task.wait(3)
+        
+        if CheckSanguineArt() then
+            print("\n✅ SANGUINE ART SUCCESSFULLY OBTAINED!")
+            SaveProgress(ProgressStates.DONE)
+            break
+        else
+            print("⚠️ Not found in backpack yet, retrying...")
+            task.wait(2)
+        end
+    end
+    
+    if not CheckSanguineArt() then
+        print("\n❌ Failed to obtain Sanguine Art after " .. maxAttempts .. " attempts")
+        print("💡 Please check manually or restart script")
     end
 end
 
--- Step 3: Farm Materials in order
-_G.FarmingMaterial = true
-_G.Settings.AutoFarm = true
-
--- Farm Vampire Fang first
-local vampireFangCount = GetCountMaterials("Vampire Fang")
-if vampireFangCount < MaterialsNeeded["Vampire Fang"] then
-    print("\n🧛 Starting Vampire Fang farming...")
-    FarmMaterial("Vampire Fang")
-else
-    print("\n✅ Vampire Fang already complete!")
-end
-
-task.wait(1)
-
--- Farm Demonic Wisp second
-local demonicWispCount = GetCountMaterials("Demonic Wisp")
-if demonicWispCount < MaterialsNeeded["Demonic Wisp"] then
-    print("\n👻 Starting Demonic Wisp farming...")
-    FarmMaterial("Demonic Wisp")
-else
-    print("\n✅ Demonic Wisp already complete!")
-end
-
-_G.FarmingMaterial = false
-_G.Settings.AutoFarm = false
-
--- Step 4: Buy Sanguine Art
-print("\n🎉 All materials collected!")
-print("📊 Final Count:")
-print("  • Vampire Fang: " .. GetCountMaterials("Vampire Fang") .. "/" .. MaterialsNeeded["Vampire Fang"])
-print("  • Demonic Wisp: " .. GetCountMaterials("Demonic Wisp") .. "/" .. MaterialsNeeded["Demonic Wisp"])
-
-task.wait(2)
-BuySanguineArt()
-
--- Final check
-task.wait(3)
-if CheckSanguineArt() then
-    print("\n✅ SANGUINE ART SUCCESSFULLY OBTAINED!")
-else
-    print("\n⚠️ Sanguine Art not found in inventory. Please check manually.")
-end
-
 print("\n✨ SCRIPT COMPLETE! ✨")
+print("💾 Progress saved to: " .. ProgressFileName)
 print("=" .. string.rep("=", 60) .. "=")
