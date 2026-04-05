@@ -747,54 +747,57 @@ local function AutoFarmLevel()
         else
             -- Đã có quest → farm mob
             if Workspace.Enemies:FindFirstChild(Mon) then
+                local title = Player.PlayerGui.Main.Quest.Container.QuestTitle.Title.Text
+                if not string.find(title, NameMon) then
+                    ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest")
+                    return
+                end
+
+                SetTask("SubTask", string.format("[AutoFarm] Farm: %s", NameMon))
+                DisableFastAttack()
+                EnableFastAttack()
+
+                -- Duyệt TẤT CẢ mob cùng loại, không break sau 1 con
                 for _, v in pairs(Workspace.Enemies:GetChildren()) do
                     if v.Name == Mon
                         and v:FindFirstChild("HumanoidRootPart")
                         and v:FindFirstChild("Humanoid")
                         and v.Humanoid.Health > 0
                     then
-                        local title = Player.PlayerGui.Main.Quest.Container.QuestTitle.Title.Text
-                        if string.find(title, NameMon) then
-                            SetTask("SubTask", string.format("[AutoFarm] Farm: %s", NameMon))
+                        if not Player.PlayerGui.Main.Quest.Visible then break end
 
-                            DisableFastAttack()
-                            _G.CurrentTarget = v
-                            EnableFastAttack()
+                        _G.CurrentTarget = v
 
-                            repeat
-                                task.wait()
-                                if not v or not v.Parent then break end
-                                if not v:FindFirstChild("Humanoid") or v.Humanoid.Health <= 0 then break end
-                                if not Player.PlayerGui.Main.Quest.Visible then break end
+                        repeat
+                            task.wait()
+                            if not v or not v.Parent then break end
+                            if not v:FindFirstChild("Humanoid") or v.Humanoid.Health <= 0 then break end
+                            if not Player.PlayerGui.Main.Quest.Visible then break end
 
-                                EquipWeapon("Melee")
-                                AutoHaki()
+                            EquipWeapon("Melee")
+                            AutoHaki()
 
-                                -- Follow mob real-time
-                                if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
-                                    Player.Character.HumanoidRootPart.CFrame =
-                                        v.HumanoidRootPart.CFrame * CFrame.new(0, 20, 0)
-                                end
+                            if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
+                                Player.Character.HumanoidRootPart.CFrame =
+                                    v.HumanoidRootPart.CFrame * CFrame.new(0, 20, 0)
+                            end
 
-                                BringEnemy(v.HumanoidRootPart.Position, {Mon})
+                            BringEnemy(v.HumanoidRootPart.Position, {Mon})
 
-                            until not v or not v.Parent
-                                or v.Humanoid.Health <= 0
-                                or not Player.PlayerGui.Main.Quest.Visible
+                        until not v or not v.Parent
+                            or v.Humanoid.Health <= 0
+                            or not Player.PlayerGui.Main.Quest.Visible
 
-                            DisableFastAttack()
-                            _G.CurrentTarget = nil
+                        _G.CurrentTarget = nil
 
-                            local t0 = tick()
-                            repeat task.wait(0.05)
-                            until tick() - t0 >= 0.8 or not v or not v.Parent
-
-                        else
-                            ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest")
-                        end
-                        break
+                        -- Chờ mob despawn
+                        local t0 = tick()
+                        repeat task.wait(0.05)
+                        until tick() - t0 >= 0.8 or not v or not v.Parent
                     end
                 end
+
+                DisableFastAttack()
             else
                 -- Mob chưa spawn → tween về PosM chờ
                 SetTask("SubTask", "[AutoFarm] Hết mob → chờ respawn...")
@@ -811,8 +814,197 @@ end
 
 
 -- =====================================================
---  FRUIT SYSTEM
+--  GET SABER (kích hoạt khi đạt level 300)
 -- =====================================================
+
+local function CheckItem(itemName)
+    if Player.Backpack:FindFirstChild(itemName) then return true end
+    if Player.Character and Player.Character:FindFirstChild(itemName) then return true end
+    return false
+end
+
+local function GetMobByName(name)
+    for _, v in pairs(Workspace.Enemies:GetChildren()) do
+        if v.Name == name
+            and v:FindFirstChild("Humanoid")
+            and v.Humanoid.Health > 0
+            and v:FindFirstChild("HumanoidRootPart")
+        then
+            return v
+        end
+    end
+    return nil
+end
+
+local function KillMobByName(name)
+    local v = GetMobByName(name)
+    if not v then return end
+
+    DisableFastAttack()
+    EnableFastAttack()
+    _G.CurrentTarget = v
+
+    repeat
+        task.wait()
+        if not v or not v.Parent then break end
+        if not v:FindFirstChild("Humanoid") or v.Humanoid.Health <= 0 then break end
+
+        EquipWeapon("Melee")
+        AutoHaki()
+        if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
+            Player.Character.HumanoidRootPart.CFrame =
+                v.HumanoidRootPart.CFrame * CFrame.new(0, 20, 0)
+        end
+    until not v or not v.Parent or v.Humanoid.Health <= 0
+
+    DisableFastAttack()
+    _G.CurrentTarget = nil
+    task.wait(0.5)
+end
+
+local function HopServers()
+    SetTask("SubTask", "[Saber] Hop server sau 5 giây...")
+    task.wait(5)
+    pcall(function()
+        local servers = {}
+        local req = game:HttpGet(
+            "https://games.roblox.com/v1/games/" .. game.PlaceId ..
+            "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true"
+        )
+        local body = game:GetService("HttpService"):JSONDecode(req)
+        if body and body.data then
+            for _, v in next, body.data do
+                if type(v) == "table"
+                    and tonumber(v.playing) and tonumber(v.maxPlayers)
+                    and v.playing < v.maxPlayers
+                    and v.id ~= game.JobId
+                    and v.playing >= 10
+                then
+                    table.insert(servers, v.id)
+                end
+            end
+        end
+        if #servers > 0 then
+            for _ = 1, 36 do
+                game:GetService("TeleportService"):TeleportToPlaceInstance(
+                    game.PlaceId,
+                    servers[math.random(1, #servers)],
+                    Player
+                )
+                task.wait(0.1)
+            end
+        end
+    end)
+end
+
+local _saberDone = false
+
+local function GetSaber()
+    if _saberDone then return true end
+    if CheckItem("Saber") then _saberDone = true; return true end
+
+    SetTask("MainTask", "[Saber] Đang làm nhiệm vụ Saber...")
+
+    pcall(function()
+        local jungleFinalPart = Workspace.Map.Jungle.Final.Part
+
+        if jungleFinalPart.CanCollide then
+            -- Cửa Jungle chưa mở → làm quest plates
+            if Workspace.Map.Jungle.QuestPlates.Door.CanCollide then
+                SetTask("SubTask", "[Saber] Kích hoạt quest plates Jungle...")
+                for _, v in next, Workspace.Map.Jungle.QuestPlates:GetChildren() do
+                    if v:FindFirstChild("Button") and v.Button:FindFirstChild("TouchInterest") then
+                        firetouchinterest(v.Button, Player.Character.HumanoidRootPart, 0)
+                        firetouchinterest(v.Button, Player.Character.HumanoidRootPart, 1)
+                    end
+                end
+            else
+                -- Door đã mở → qua Desert
+                if Workspace.Map.Desert.Burn.Part.CanCollide then
+                    -- Lửa chưa bật → lấy/dùng Torch
+                    if not CheckItem("Torch") then
+                        SetTask("SubTask", "[Saber] Lấy Torch...")
+                        firetouchinterest(Workspace.Map.Jungle.Torch, Player.Character.HumanoidRootPart, 0)
+                        firetouchinterest(Workspace.Map.Jungle.Torch, Player.Character.HumanoidRootPart, 1)
+                    else
+                        SetTask("SubTask", "[Saber] Thắp lửa Desert...")
+                        EquipWeapon("Torch")
+                        task.wait(0.2)
+                        firetouchinterest(
+                            Player.Character.Torch.Handle,
+                            Workspace.Map.Desert.Burn.Fire, 0
+                        )
+                        firetouchinterest(
+                            Player.Character.Torch.Handle,
+                            Workspace.Map.Desert.Burn.Fire, 1
+                        )
+                    end
+                else
+                    -- Lửa đã bật → quest RichSon
+                    local Progress = ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "RichSon")
+
+                    if Progress ~= 0 and Progress ~= 1 then
+                        if not CheckItem("Cup") then
+                            SetTask("SubTask", "[Saber] Lấy Cup...")
+                            firetouchinterest(Workspace.Map.Desert.Cup, Player.Character.HumanoidRootPart, 0)
+                            firetouchinterest(Workspace.Map.Desert.Cup, Player.Character.HumanoidRootPart, 1)
+                        else
+                            SetTask("SubTask", "[Saber] Dùng Cup...")
+                            EquipWeapon("Cup")
+                            task.wait(0.1)
+                            ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "FillCup",
+                                Player.Character:FindFirstChild("Cup"))
+                            ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "SickMan")
+                        end
+
+                    elseif Progress == 0 then
+                        SetTask("SubTask", "[Saber] Giết Mob Leader...")
+                        KillMobByName("Mob Leader")
+
+                    elseif Progress == 1 then
+                        if not CheckItem("Relic") then
+                            SetTask("SubTask", "[Saber] Lấy Relic...")
+                            ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "RichSon")
+                        else
+                            SetTask("SubTask", "[Saber] Dùng Relic mở cửa Jungle...")
+                            EquipWeapon("Relic")
+                            task.wait(0.1)
+                            firetouchinterest(
+                                Player.Character.Relic.Handle,
+                                Workspace.Map.Jungle.Final.Invis, 0
+                            )
+                            firetouchinterest(
+                                Player.Character.Relic.Handle,
+                                Workspace.Map.Jungle.Final.Invis, 1
+                            )
+                        end
+                    end
+                end
+            end
+        else
+            -- Cửa Jungle đã mở → tìm Saber Expert
+            local saberExpert = GetMobByName("Saber Expert")
+            if saberExpert then
+                SetTask("SubTask", "[Saber] Giết Saber Expert...")
+                KillMobByName("Saber Expert")
+            else
+                SetTask("SubTask", "[Saber] Không thấy Saber Expert → hop server...")
+                HopServers()
+            end
+        end
+    end)
+
+    -- Kiểm tra sau mỗi lần chạy
+    if CheckItem("Saber") then
+        _saberDone = true
+        SetTask("MainTask", "[Saber] ✓ Đã lấy được Saber!")
+        return true
+    end
+    return false
+end
+
+
+
 
 local function StoreFruitInBackpack()
     for _, e in pairs(Player.Backpack:GetChildren()) do
@@ -868,22 +1060,35 @@ repeat task.wait() until Player.Character
 
 print("[Kaitun] ✓ Character & Data loaded → Khởi động tất cả hệ thống...")
 
--- Loop 1: Auto Farm Level — dừng farm khi có fruit, tiếp tục khi hết
+-- Loop 1: Auto Farm Level — ưu tiên: Saber > Fruit > Farm
 task.spawn(function()
     while task.wait(0.1) do
-        -- Ưu tiên collect fruit trước khi farm
-        if HasFruitOnMap() then
-            SetTask("SubTask", "[Fruit] Phát hiện fruit trên map → dừng farm, đi collect...")
+        local ok, level = pcall(function() return Player.Data.Level.Value end)
+        local currentLevel = ok and level or 0
+
+        -- Ưu tiên 1: GetSaber khi đạt level 300
+        if currentLevel >= 300 and not _saberDone then
+            local saberOk, saberErr = pcall(GetSaber)
+            if not saberOk then
+                SetTask("SubTask", "[Saber] Lỗi: " .. tostring(saberErr))
+                task.wait(2)
+            end
+
+        -- Ưu tiên 2: Collect fruit (chỉ khi KHÔNG đang làm saber)
+        elseif HasFruitOnMap() then
+            SetTask("SubTask", "[Fruit] Phát hiện fruit → dừng farm, đi collect...")
             DisableFastAttack()
             _G.CurrentTarget = nil
             TweenToFruits()
             SetTask("SubTask", "[Fruit] Đã collect xong → tiếp tục farm")
+
+        -- Ưu tiên 3: Farm bình thường
         else
-            local ok, err = pcall(AutoFarmLevel)
-            if not ok then
+            local farmOk, farmErr = pcall(AutoFarmLevel)
+            if not farmOk then
                 _G.CurrentTarget = nil
                 DisableFastAttack()
-                SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(err))
+                SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(farmErr))
                 task.wait(2)
             end
         end
