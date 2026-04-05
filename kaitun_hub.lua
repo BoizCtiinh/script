@@ -562,8 +562,9 @@ local function getquest(...)
     local ok_txt, qtext = pcall(function()
         return Player.PlayerGui.Main.Quest.Container.QuestTitle.Title.Text
     end)
+    -- Chỉ abandon "Bandit" đơn thuần (level thấp), KHÔNG abandon "Sky Bandit" hay các quest khác
     if ok_txt and type(qtext) == "string"
-        and string.find(qtext:lower(), "bandit")
+        and qtext:lower() == "bandit"
         and ok_lvl and lvl > 10
     then
         ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest")
@@ -574,32 +575,6 @@ end
 local function AbandonQuest()
     pcall(function() ReplicatedStorage.Remotes.CommF_:InvokeServer("AbandonQuest") end)
     task.wait(0.5)
-end
-
-local function StartQuest(PosQ, Qname, Qdata)
-    SetTask("SubTask", "[Quest] Tween → NPC | " .. Qname)
-    topos(PosQ)
-    WaitTween(12)
-
-    -- Đảm bảo player đã đến gần NPC (trong vòng 15 studs) mới gọi remote
-    local arrived = false
-    if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
-        local dist = (PosQ.Position - Player.Character.HumanoidRootPart.Position).Magnitude
-        arrived = dist <= 15
-    end
-
-    if not arrived then
-        -- Teleport thẳng nếu tween chưa đưa player đến đủ gần
-        if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
-            Player.Character.HumanoidRootPart.CFrame = PosQ
-        end
-        task.wait(0.2)
-    end
-
-    -- Gọi remote 1 lần duy nhất
-    pcall(function()
-        ReplicatedStorage.Remotes.CommF_:InvokeServer("StartQuest", Qname, Qdata)
-    end)
 end
 
 
