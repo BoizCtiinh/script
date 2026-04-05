@@ -811,6 +811,53 @@ end
 
 
 -- =====================================================
+--  FRUIT SYSTEM
+-- =====================================================
+
+local function StoreFruitInBackpack()
+    for _, e in pairs(Player.Backpack:GetChildren()) do
+        local eatRemote = e:FindFirstChild("EatRemote", true)
+        if eatRemote then
+            local origName = e:GetAttribute("OriginalName")
+            if origName then
+                pcall(function()
+                    ReplicatedStorage.Remotes.CommF_:InvokeServer(
+                        "StoreFruit",
+                        origName,
+                        Player.Backpack:FindFirstChild(e.Name)
+                    )
+                end)
+            end
+        end
+    end
+end
+
+-- Check có fruit nào trên map không
+local function HasFruitOnMap()
+    for _, obj in pairs(Workspace:GetChildren()) do
+        if string.find(obj.Name, "Fruit") then
+            return true
+        end
+    end
+    return false
+end
+
+-- Tween tới từng fruit trên map rồi store
+local function TweenToFruits()
+    for _, obj in pairs(Workspace:GetChildren()) do
+        if string.find(obj.Name, "Fruit") then
+            pcall(function()
+                topos(obj.Handle.CFrame)
+                WaitTween(10)
+                task.wait(0.3)
+                StoreFruitInBackpack()
+            end)
+        end
+    end
+end
+
+
+-- =====================================================
 --  KHỞI ĐỘNG TỰ ĐỘNG
 -- =====================================================
 
@@ -821,16 +868,24 @@ repeat task.wait() until Player.Character
 
 print("[Kaitun] ✓ Character & Data loaded → Khởi động tất cả hệ thống...")
 
--- Loop 1: Auto Farm Level
+-- Loop 1: Auto Farm Level — dừng farm khi có fruit, tiếp tục khi hết
 task.spawn(function()
     while task.wait(0.1) do
-        local ok, err = pcall(AutoFarmLevel)
-        if not ok then
-            -- Dọn sạch state bị kẹt khi có lỗi
-            _G.CurrentTarget = nil
+        -- Ưu tiên collect fruit trước khi farm
+        if HasFruitOnMap() then
+            SetTask("SubTask", "[Fruit] Phát hiện fruit trên map → dừng farm, đi collect...")
             DisableFastAttack()
-            SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(err))
-            task.wait(2)
+            _G.CurrentTarget = nil
+            TweenToFruits()
+            SetTask("SubTask", "[Fruit] Đã collect xong → tiếp tục farm")
+        else
+            local ok, err = pcall(AutoFarmLevel)
+            if not ok then
+                _G.CurrentTarget = nil
+                DisableFastAttack()
+                SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(err))
+                task.wait(2)
+            end
         end
     end
 end)
@@ -861,14 +916,22 @@ end)
 
 -- Loop 4: Redeem Code X2 EXP (thử 1 lần lúc đầu, sau đó check mỗi 60s)
 task.spawn(function()
-    task.wait(3) -- chờ script ổn định
+    task.wait(3)
     RedeemCodes()
 
     while task.wait(60) do
-        -- Thử lại nếu boost hết hạn và chưa hết code
         if not LocalStorage:Get("IsCodesRanOut") and GetExpBoost() == 0 then
             RedeemCodes()
         end
+    end
+end)
+
+-- Loop 5: Random Fruit (mua từ Cousin mỗi 5s)
+task.spawn(function()
+    while task.wait(5) do
+        pcall(function()
+            ReplicatedStorage.Remotes.CommF_:InvokeServer("Cousin", "Buy")
+        end)
     end
 end)
 
