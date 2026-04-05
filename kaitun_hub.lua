@@ -1140,5 +1140,10 @@ task.spawn(function()
     end
 end)
 
-print("[Kaitun] ✓ Tất cả hệ thống đã khởi động!")
+-- Loop 6: Auto Store Fruit trong backpack (chạy liên tục mỗi 3s, độc lập với TweenFruit)
+task.spawn(function()
+    while task.wait(3) do
+        pcall(StoreFruitInBackpack)
+    end
+end)
 print("[Kaitun] BringMob =", _G.BringMob)
