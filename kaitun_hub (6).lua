@@ -530,7 +530,7 @@ local function AutoFarmLevel()
                     ReplicatedStorage.Remotes.CommF_:InvokeServer("StartQuest", Qname, Qdata)
                 end
             end
-        else
+            else
             if Workspace.Enemies:FindFirstChild(Mon) then
                 local title = Player.PlayerGui.Main.Quest.Container.QuestTitle.Title.Text
                 if not string.find(title, NameMon) then
@@ -899,31 +899,52 @@ local function HasMeleeEquipped(meleeName)
     return false
 end
 
--- Tìm NPC trong ReplicatedStorage.NPCs hoặc workspace.NPCs
-local function FindNPC(npcName)
-    local npcFolderRS = ReplicatedStorage:FindFirstChild("NPCs")
-    if npcFolderRS then
-        local n = npcFolderRS:FindFirstChild(npcName)
-        if n then return n end
-    end
-    local npcFolderWS = Workspace:FindFirstChild("NPCs")
-    if npcFolderWS then
-        local n = npcFolderWS:FindFirstChild(npcName)
-        if n then return n end
-    end
-    return nil
+-- =====================================================
+--  NPC FINDER
+--  Quy tắc game: NPC chỉ tồn tại ở MỘT trong hai nơi tại một thời điểm:
+--    • ReplicatedStorage.NPCs : player đang ở XA  → dùng để navigate
+--    • Workspace.NPCs         : player đã ĐỦ GẦN → NPC thật, invoke remote được
+-- =====================================================
+
+local function FindNPCInWorkspace(npcName)
+    local folder = Workspace:FindFirstChild("NPCs")
+    return folder and folder:FindFirstChild(npcName) or nil
 end
 
--- Lấy CFrame từ NPC model
+local function FindNPCInRS(npcName)
+    local folder = ReplicatedStorage:FindFirstChild("NPCs")
+    return folder and folder:FindFirstChild(npcName) or nil
+end
+
+-- Lấy CFrame từ NPC model (hỗ trợ nhiều kiểu instance)
 local function GetNPCCFrame(npc)
     if not npc then return nil end
     local hrp = npc:FindFirstChild("HumanoidRootPart")
     if hrp then return hrp.CFrame end
+    if npc:IsA("Model") and npc.PrimaryPart then return npc.PrimaryPart.CFrame end
     local ok, cf = pcall(function() return npc:GetModelCFrame() end)
     if ok and cf then return cf end
     local ok2, cf2 = pcall(function() return npc.WorldPivot end)
     if ok2 and cf2 then return cf2 end
+    if npc:IsA("BasePart") then return npc.CFrame end
     return nil
+end
+
+-- Trả về (CFrame, isInWorkspace):
+--   true  = NPC đã spawn vào WS → có thể invoke remote ngay
+--   false = NPC còn ở RS → cần tiếp tục tween đến gần hơn
+local function GetNPCNavCFrame(npcName)
+    local wsNPC = FindNPCInWorkspace(npcName)
+    if wsNPC then
+        local cf = GetNPCCFrame(wsNPC)
+        if cf then return cf, true end
+    end
+    local rsNPC = FindNPCInRS(npcName)
+    if rsNPC then
+        local cf = GetNPCCFrame(rsNPC)
+        if cf then return cf, false end
+    end
+    return nil, nil
 end
 
 -- Fire remote mua melee (hỗ trợ single/multi call)
@@ -999,184 +1020,4 @@ local function AutoFullyMelee()
         if not name then
             _meleeAllDone = true
             _meleeBuying  = false
-            SetTask("MainTask", "[Melee] ✓ Đã mua & farm đủ mastery tất cả melee!")
-            break
-        end
-
-        if action == "farm" then
-            -- Chỉ equip đúng melee, để Main Loop tiếp tục farm bình thường
-            _meleeBuying = false
-            SetTask("SubTask", string.format(
-                "[Melee] Farm mastery %s (%d/%d) → equip",
-                name, GetMeleeMastery(name), MELEE_MASTERY_REQ[name] or 400
-            ))
-            EquipWeapon("Melee")
-
-        elseif action == "buy" then
-            -- Báo cho Main Loop biết: TẠM DỪNG farm, đang đi mua melee
-            _meleeBuying = true
-
-            local npcName = MELEE_NPC[name]
-            if not npcName then
-                SetTask("SubTask", "[Melee] Không có NPC data cho " .. name)
-                _meleeBuying = false
-                continue
-            end
-
-            SetTask("MainTask", "[Melee] Đi mua " .. name .. " từ " .. npcName)
-
-            -- Tìm và tween tới NPC
-            local npc = FindNPC(npcName)
-            if not npc then
-                SetTask("SubTask", "[Melee] Không tìm thấy NPC: " .. npcName .. " → chờ...")
-                task.wait(3)
-                _meleeBuying = false
-                continue
-            end
-
-            local npcCF = GetNPCCFrame(npc)
-            if not npcCF then
-                SetTask("SubTask", "[Melee] Không lấy được CFrame NPC: " .. npcName)
-                _meleeBuying = false
-                continue
-            end
-
-            -- Tween tới NPC, chờ đến khi đủ gần (≤ 12 studs)
-            local timeout = tick() + 20
-            while Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") do
-                local dist = (Player.Character.HumanoidRootPart.Position - npcCF.Position).Magnitude
-                if dist <= 12 then break end
-                if tick() > timeout then
-                    SetTask("SubTask", "[Melee] Timeout tween tới " .. npcName)
-                    break
-                end
-                SetTask("SubTask", string.format("[Melee] Tween → %s (%.0f studs)", npcName, dist))
-                topos(npcCF); WaitTween(10)
-            end
-
-            -- Mua
-            SetTask("SubTask", "[Melee] Mua " .. name .. "...")
-            DisableFastAttack() -- dừng attack khi đứng trước NPC
-            FireMeleeRemote(name)
-            task.wait(1)
-
-            -- Kiểm tra kết quả
-            if HasMeleeEquipped(name) or GetMeleeMastery(name) > 0 then
-                SetTask("SubTask", "[Melee] ✓ Mua " .. name .. " thành công!")
-                EquipWeapon("Melee")
-            else
-                SetTask("SubTask", "[Melee] Mua " .. name .. " chưa thành công, sẽ thử lại...")
-            end
-
-            _meleeBuying = false
-        end
-    end
-end
-
-
--- =====================================================
---  KHỞI ĐỘNG
--- =====================================================
-
-repeat task.wait()
-until Player.Character
-    and Player.Character:FindFirstChild("HumanoidRootPart")
-    and Player:FindFirstChild("Data")
-
-print("[Kaitun] ✓ Character & Data loaded → Khởi động tất cả hệ thống...")
-
--- Loop 1: Auto Farm Level — ưu tiên: Saber > Fruit > Melee Buy > Farm
-task.spawn(function()
-    while task.wait(0.1) do
-        local ok, level = pcall(function() return Player.Data.Level.Value end)
-        local currentLevel = ok and level or 0
-
-        -- Ưu tiên 1: GetSaber (level ≥ 300)
-        if currentLevel >= 300 and not _saberDone then
-            local saberOk, saberErr = pcall(GetSaber)
-            if not saberOk then
-                SetTask("SubTask", "[Saber] Lỗi: " .. tostring(saberErr)); task.wait(2)
-            end
-
-        -- Ưu tiên 2: Collect fruit trên map
-        elseif HasFruitOnMap() then
-            SetTask("SubTask", "[Fruit] Phát hiện fruit → dừng farm, đi collect...")
-            DisableFastAttack()
-            _G.CurrentTarget = nil
-            TweenToFruits()
-            SetTask("SubTask", "[Fruit] Đã collect xong → tiếp tục farm")
-
-        -- Ưu tiên 3: Đang đi mua melee → nhường cho AutoFullyMelee xử lý
-        elseif _meleeBuying then
-            SetTask("MainTask", "[Farm] Tạm dừng — đang đi mua melee...")
-            DisableFastAttack()
-            _G.CurrentTarget = nil
-            task.wait(0.5)
-
-        -- Ưu tiên 4: Farm bình thường
-        else
-            local farmOk, farmErr = pcall(AutoFarmLevel)
-            if not farmOk then
-                _G.CurrentTarget = nil
-                DisableFastAttack()
-                SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(farmErr)); task.wait(2)
-            end
-        end
-    end
-end)
-
--- Loop 2: Auto Fully Melee (chạy song song, tự nhường cho farm khi action == "farm")
-task.spawn(AutoFullyMelee)
-
--- Loop 3: Auto Stats (event-based)
-task.spawn(function()
-    repeat task.wait() until Player.Data:FindFirstChild("Points")
-    AutoStats()
-    Player.Data.Points.Changed:Connect(function(newVal)
-        if newVal and newVal > 0 then AutoStats() end
-    end)
-    print("[Kaitun] ✓ AutoStats → Online")
-end)
-
--- Loop 4: Auto Haki (check mỗi 5s)
-task.spawn(function()
-    while task.wait(5) do AutoHaki() end
-end)
-
--- Loop 5: Redeem Code X2 EXP (thử 1 lần lúc đầu, sau đó check mỗi 60s)
-task.spawn(function()
-    task.wait(3); RedeemCodes()
-    while task.wait(60) do
-        if not LocalStorage:Get("IsCodesRanOut") and GetExpBoost() == 0 then
-            RedeemCodes()
-        end
-    end
-end)
-
--- Loop 6: Random Fruit (mua từ Cousin liên tục)
-task.spawn(function()
-    while true do
-        pcall(function() ReplicatedStorage.Remotes.CommF_:InvokeServer("Cousin", "Buy") end)
-        task.wait(0.5)
-    end
-end)
-
--- Loop 7: Auto Store — store ngay khi nhặt được fruit
-task.spawn(function()
-    local function onItemAdded(item)
-        task.wait(0.1)
-        pcall(function()
-            if item:FindFirstChild("EatRemote", true) then
-                local orig = item:GetAttribute("OriginalName")
-                if orig then
-                    ReplicatedStorage.Remotes.CommF_:InvokeServer("StoreFruit", orig,
-                        Player.Backpack:FindFirstChild(item.Name))
-                end
-            end
-        end)
-    end
-    pcall(StoreFruitInBackpack)
-    Player.Backpack.ChildAdded:Connect(onItemAdded)
-end)
-
-print("[Kaitun] ✓ Tất cả systems online | BringMob =", _G.BringMob)
+            SetTask("MainTask", "[Melee] ✓ Đã mua & farm đủ mastery tất
