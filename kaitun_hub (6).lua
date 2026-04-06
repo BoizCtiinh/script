@@ -1021,3 +1021,195 @@ local function AutoFullyMelee()
             _meleeAllDone = true
             _meleeBuying  = false
             SetTask("MainTask", "[Melee] ✓ Đã mua & farm đủ mastery tất
+            break
+        end
+
+        if action == "farm" then
+            -- Chỉ equip đúng melee, để Main Loop tiếp tục farm bình thường
+            _meleeBuying = false
+            SetTask("SubTask", string.format(
+                "[Melee] Farm mastery %s (%d/%d) → equip",
+                name, GetMeleeMastery(name), MELEE_MASTERY_REQ[name] or 400
+            ))
+            EquipWeapon("Melee")
+
+        elseif action == "buy" then
+            -- Báo cho Main Loop biết: TẠM DỪNG farm, đang đi mua melee
+            _meleeBuying = true
+
+            local npcName = MELEE_NPC[name]
+            if not npcName then
+                SetTask("SubTask", "[Melee] Không có NPC data cho " .. name)
+                _meleeBuying = false
+                continue
+            end
+
+            SetTask("MainTask", "[Melee] Đi mua " .. name .. " từ " .. npcName)
+            DisableFastAttack()
+
+            -- Tween đến NPC.
+            -- • NPC ở RS  → player còn xa, tiếp tục tween
+            -- • NPC ở WS  → player đã đủ gần, NPC thật đã spawn → mua được
+            local NAV_TIMEOUT = 30
+            local navStart    = tick()
+            local readyToBuy  = false
+
+            while tick() - navStart < NAV_TIMEOUT do
+                if not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then
+                    task.wait(0.5); continue
+                end
+
+                local navCF, isInWorkspace = GetNPCNavCFrame(npcName)
+                if not navCF then
+                    SetTask("SubTask", "[Melee] Không tìm thấy NPC: " .. npcName .. " → chờ...")
+                    task.wait(2); continue
+                end
+
+                if isInWorkspace then
+                    -- NPC đã ở WS → đủ gần, có thể invoke remote
+                    readyToBuy = true
+                    break
+                end
+
+                -- NPC còn ở RS → cần tween đến gần hơn
+                local dist = (Player.Character.HumanoidRootPart.Position - navCF.Position).Magnitude
+                SetTask("SubTask", string.format(
+                    "[Melee] Tween → %s (còn %.0f studs, chờ NPC spawn...)", npcName, dist
+                ))
+                topos(navCF)
+                WaitTween(12)
+            end
+
+            if not readyToBuy then
+                SetTask("SubTask", "[Melee] Timeout tween tới " .. npcName .. " → thử lại sau")
+                _meleeBuying = false
+                continue
+            end
+
+            -- Mua
+            SetTask("SubTask", "[Melee] Mua " .. name .. "...")
+            DisableFastAttack() -- dừng attack khi đứng trước NPC
+            FireMeleeRemote(name)
+            task.wait(1)
+
+            -- Kiểm tra kết quả
+            if HasMeleeEquipped(name) or GetMeleeMastery(name) > 0 then
+                SetTask("SubTask", "[Melee] ✓ Mua " .. name .. " thành công!")
+                EquipWeapon("Melee")
+            else
+                SetTask("SubTask", "[Melee] Mua " .. name .. " chưa thành công, sẽ thử lại...")
+            end
+
+            _meleeBuying = false
+        end
+    end
+end
+
+
+-- =====================================================
+--  KHỞI ĐỘNG
+-- =====================================================
+
+repeat task.wait()
+until Player.Character
+    and Player.Character:FindFirstChild("HumanoidRootPart")
+    and Player:FindFirstChild("Data")
+
+print("[Kaitun] ✓ Character & Data loaded → Khởi động tất cả hệ thống...")
+
+-- Loop 1: Auto Farm Level — ưu tiên: Saber > Fruit > Melee Buy > Farm
+task.spawn(function()
+    while task.wait(0.1) do
+        local ok, level = pcall(function() return Player.Data.Level.Value end)
+        local currentLevel = ok and level or 0
+
+        -- Ưu tiên 1: GetSaber (level ≥ 300)
+        if currentLevel >= 300 and not _saberDone then
+            local saberOk, saberErr = pcall(GetSaber)
+            if not saberOk then
+                SetTask("SubTask", "[Saber] Lỗi: " .. tostring(saberErr)); task.wait(2)
+            end
+
+        -- Ưu tiên 2: Collect fruit trên map
+        elseif HasFruitOnMap() then
+            SetTask("SubTask", "[Fruit] Phát hiện fruit → dừng farm, đi collect...")
+            DisableFastAttack()
+            _G.CurrentTarget = nil
+            TweenToFruits()
+            SetTask("SubTask", "[Fruit] Đã collect xong → tiếp tục farm")
+
+        -- Ưu tiên 3: Đang đi mua melee → nhường cho AutoFullyMelee xử lý
+        elseif _meleeBuying then
+            SetTask("MainTask", "[Farm] Tạm dừng — đang đi mua melee...")
+            DisableFastAttack()
+            _G.CurrentTarget = nil
+            task.wait(0.5)
+
+        -- Ưu tiên 4: Farm bình thường
+        else
+            local farmOk, farmErr = pcall(AutoFarmLevel)
+            if not farmOk then
+                _G.CurrentTarget = nil
+                DisableFastAttack()
+                SetTask("SubTask", "[AutoFarm] Lỗi: " .. tostring(farmErr)); task.wait(2)
+            end
+        end
+    end
+end)
+
+-- Loop 2: Auto Fully Melee (chạy song song, tự nhường cho farm khi action == "farm")
+task.spawn(AutoFullyMelee)
+
+-- Loop 3: Auto Stats (event-based)
+task.spawn(function()
+    repeat task.wait() until Player.Data:FindFirstChild("Points")
+    AutoStats()
+    Player.Data.Points.Changed:Connect(function(newVal)
+        if newVal and newVal > 0 then AutoStats() end
+    end)
+    print("[Kaitun] ✓ AutoStats → Online")
+end)
+
+-- Loop 4: Auto Haki (check mỗi 5s)
+task.spawn(function()
+    while task.wait(5) do AutoHaki() end
+end)
+
+-- Loop 5: Redeem Code X2 EXP (thử 1 lần lúc đầu, sau đó check mỗi 60s)
+task.spawn(function()
+    task.wait(3); RedeemCodes()
+    while task.wait(60) do
+        if not LocalStorage:Get("IsCodesRanOut") and GetExpBoost() == 0 then
+            RedeemCodes()
+        end
+    end
+end)
+
+-- Loop 6: Random Fruit (mua từ Cousin liên tục)
+task.spawn(function()
+    while true do
+        pcall(function() ReplicatedStorage.Remotes.CommF_:InvokeServer("Cousin", "Buy") end)
+        task.wait(0.5)
+    end
+end)
+
+-- Loop 7: Auto Store — store ngay khi nhặt được fruit
+task.spawn(function()
+    local function onItemAdded(item)
+        task.wait(0.1)
+        pcall(function()
+            if item:FindFirstChild("EatRemote", true) then
+                local orig = item:GetAttribute("OriginalName")
+                if orig then
+                    ReplicatedStorage.Remotes.CommF_:InvokeServer("StoreFruit", orig,
+                        Player.Backpack:FindFirstChild(item.Name))
+                end
+            end
+        end)
+    end
+    pcall(StoreFruitInBackpack)
+    Player.Backpack.ChildAdded:Connect(onItemAdded)
+end)
+
+print("[Kaitun] ✓ Tất cả systems online | BringMob =", _G.BringMob)
+    
