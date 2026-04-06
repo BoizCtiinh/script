@@ -792,28 +792,65 @@ end
 --  GET SABER (kích hoạt khi đạt level 300)
 -- =====================================================
 
+-- Check item trong inventory server (sword, gun, fruit, material...)
 local function CheckItem(itemName)
-    if Player.Backpack:FindFirstChild(itemName) then return true end
-    if Player.Character and Player.Character:FindFirstChild(itemName) then return true end
-    return false
+    local ok, result = pcall(function()
+        local inventory = ReplicatedStorage.Remotes.CommF_:InvokeServer("getInventory")
+        for _, v in pairs(inventory) do
+            if v.Name == itemName then return v end
+        end
+        return nil
+    end)
+    return ok and result or nil
 end
 
-local function GetMobByName(name)
+-- Check item trong backpack/character (Torch, Cup, tool cầm tay...)
+local function CheckBackpack(itemName)
+    for _, v in next, Player.Backpack:GetChildren() do
+        if v:IsA("Tool") and (
+            tostring(v) == itemName or
+            v.Name == itemName or
+            string.find(v.Name, itemName)
+        ) then
+            return v
+        end
+    end
+    if Player.Character then
+        for _, v in next, Player.Character:GetChildren() do
+            if v:IsA("Tool") and (
+                tostring(v) == itemName or
+                v.Name == itemName or
+                string.find(v.Name, itemName)
+            ) then
+                return v
+            end
+        end
+    end
+    return nil
+end
+
+local function IsAlive(v)
+    return v and v.Parent
+        and v:FindFirstChild("Humanoid")
+        and v.Humanoid.Health > 0
+        and v:FindFirstChild("HumanoidRootPart")
+end
+
+-- Tìm mob theo tên trong Workspace.Enemies
+local function GetMobByName(target)
+    local name = typeof(target) == "Instance" and target.Name or target
     for _, v in pairs(Workspace.Enemies:GetChildren()) do
-        if v.Name == name
-            and v:FindFirstChild("Humanoid")
-            and v.Humanoid.Health > 0
-            and v:FindFirstChild("HumanoidRootPart")
-        then
+        if v.Name == name and IsAlive(v) then
             return v
         end
     end
     return nil
 end
 
-local function KillMobByName(name)
-    local v = GetMobByName(name)
-    if not v then return end
+-- Kill mob theo tên, follow real-time + bring
+local function KillMobByName(target)
+    local v = GetMobByName(target)
+    if not v or not IsAlive(v) then return end
 
     DisableFastAttack()
     EnableFastAttack()
@@ -821,16 +858,19 @@ local function KillMobByName(name)
 
     repeat
         task.wait()
-        if not v or not v.Parent then break end
-        if not v:FindFirstChild("Humanoid") or v.Humanoid.Health <= 0 then break end
+        if not IsAlive(v) then break end
 
         EquipWeapon("Melee")
         AutoHaki()
+
         if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
             Player.Character.HumanoidRootPart.CFrame =
                 v.HumanoidRootPart.CFrame * CFrame.new(0, 20, 0)
         end
-    until not v or not v.Parent or v.Humanoid.Health <= 0
+
+        BringEnemy(v.HumanoidRootPart.Position, {v.Name})
+
+    until not IsAlive(v)
 
     DisableFastAttack()
     _G.CurrentTarget = nil
@@ -876,7 +916,7 @@ local _saberDone = false
 
 local function GetSaber()
     if _saberDone then return true end
-    if CheckItem("Saber") then _saberDone = true; return true end
+    if CheckItem("Saber") then _saberDone = true; return true end  -- Saber là sword → check inventory
 
     SetTask("MainTask", "[Saber] Đang làm nhiệm vụ Saber...")
 
@@ -884,7 +924,6 @@ local function GetSaber()
         local jungleFinalPart = Workspace.Map.Jungle.Final.Part
 
         if jungleFinalPart.CanCollide then
-            -- Cửa Jungle chưa mở → làm quest plates
             if Workspace.Map.Jungle.QuestPlates.Door.CanCollide then
                 SetTask("SubTask", "[Saber] Kích hoạt quest plates Jungle...")
                 for _, v in next, Workspace.Map.Jungle.QuestPlates:GetChildren() do
@@ -894,10 +933,8 @@ local function GetSaber()
                     end
                 end
             else
-                -- Door đã mở → qua Desert
                 if Workspace.Map.Desert.Burn.Part.CanCollide then
-                    -- Lửa chưa bật → lấy/dùng Torch
-                    if not CheckItem("Torch") then
+                    if not CheckBackpack("Torch") then  -- Torch là tool cầm tay
                         SetTask("SubTask", "[Saber] Lấy Torch...")
                         firetouchinterest(Workspace.Map.Jungle.Torch, Player.Character.HumanoidRootPart, 0)
                         firetouchinterest(Workspace.Map.Jungle.Torch, Player.Character.HumanoidRootPart, 1)
@@ -905,21 +942,14 @@ local function GetSaber()
                         SetTask("SubTask", "[Saber] Thắp lửa Desert...")
                         EquipWeapon("Torch")
                         task.wait(0.2)
-                        firetouchinterest(
-                            Player.Character.Torch.Handle,
-                            Workspace.Map.Desert.Burn.Fire, 0
-                        )
-                        firetouchinterest(
-                            Player.Character.Torch.Handle,
-                            Workspace.Map.Desert.Burn.Fire, 1
-                        )
+                        firetouchinterest(Player.Character.Torch.Handle, Workspace.Map.Desert.Burn.Fire, 0)
+                        firetouchinterest(Player.Character.Torch.Handle, Workspace.Map.Desert.Burn.Fire, 1)
                     end
                 else
-                    -- Lửa đã bật → quest RichSon
                     local Progress = ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "RichSon")
 
                     if Progress ~= 0 and Progress ~= 1 then
-                        if not CheckItem("Cup") then
+                        if not CheckBackpack("Cup") then  -- Cup là tool cầm tay
                             SetTask("SubTask", "[Saber] Lấy Cup...")
                             firetouchinterest(Workspace.Map.Desert.Cup, Player.Character.HumanoidRootPart, 0)
                             firetouchinterest(Workspace.Map.Desert.Cup, Player.Character.HumanoidRootPart, 1)
@@ -937,27 +967,20 @@ local function GetSaber()
                         KillMobByName("Mob Leader")
 
                     elseif Progress == 1 then
-                        if not CheckItem("Relic") then
+                        if not CheckBackpack("Relic") then  -- Relic là tool cầm tay
                             SetTask("SubTask", "[Saber] Lấy Relic...")
                             ReplicatedStorage.Remotes.CommF_:InvokeServer("ProQuestProgress", "RichSon")
                         else
                             SetTask("SubTask", "[Saber] Dùng Relic mở cửa Jungle...")
                             EquipWeapon("Relic")
                             task.wait(0.1)
-                            firetouchinterest(
-                                Player.Character.Relic.Handle,
-                                Workspace.Map.Jungle.Final.Invis, 0
-                            )
-                            firetouchinterest(
-                                Player.Character.Relic.Handle,
-                                Workspace.Map.Jungle.Final.Invis, 1
-                            )
+                            firetouchinterest(Player.Character.Relic.Handle, Workspace.Map.Jungle.Final.Invis, 0)
+                            firetouchinterest(Player.Character.Relic.Handle, Workspace.Map.Jungle.Final.Invis, 1)
                         end
                     end
                 end
             end
         else
-            -- Cửa Jungle đã mở → tìm Saber Expert
             local saberExpert = GetMobByName("Saber Expert")
             if saberExpert then
                 SetTask("SubTask", "[Saber] Giết Saber Expert...")
@@ -969,7 +992,6 @@ local function GetSaber()
         end
     end)
 
-    -- Kiểm tra sau mỗi lần chạy
     if CheckItem("Saber") then
         _saberDone = true
         SetTask("MainTask", "[Saber] ✓ Đã lấy được Saber!")
@@ -1106,19 +1128,39 @@ task.spawn(function()
     end
 end)
 
--- Loop 5: Random Fruit (mua từ Cousin mỗi 5s)
+-- Loop 5: Random Fruit (mua từ Cousin liên tục, không wait)
 task.spawn(function()
-    while task.wait(5) do
+    while true do
         pcall(function()
             ReplicatedStorage.Remotes.CommF_:InvokeServer("Cousin", "Buy")
         end)
+        task.wait(0.5) -- nhỏ nhất để tránh throttle server
     end
 end)
 
--- Loop 6: Auto Store Fruit trong backpack (chạy liên tục mỗi 3s, độc lập với TweenFruit)
+-- Loop 6: Auto Store — lắng nghe ChildAdded backpack, store ngay khi có fruit
 task.spawn(function()
-    while task.wait(3) do
-        pcall(StoreFruitInBackpack)
+    local function onItemAdded(item)
+        task.wait(0.1) -- chờ item load xong attributes
+        pcall(function()
+            local eatRemote = item:FindFirstChild("EatRemote", true)
+            if eatRemote then
+                local origName = item:GetAttribute("OriginalName")
+                if origName then
+                    ReplicatedStorage.Remotes.CommF_:InvokeServer(
+                        "StoreFruit",
+                        origName,
+                        Player.Backpack:FindFirstChild(item.Name)
+                    )
+                end
+            end
+        end)
     end
+
+    -- Store tất cả fruit đang có trong backpack ngay khi script chạy
+    pcall(StoreFruitInBackpack)
+
+    -- Bắt event khi item mới vào backpack
+    Player.Backpack.ChildAdded:Connect(onItemAdded)
 end)
-print("[Kaitun] BringMob =", _G.BringMob)
+print("[Kaitun] BringMob =", _G.BringMob) 
